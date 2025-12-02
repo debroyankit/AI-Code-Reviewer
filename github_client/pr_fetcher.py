@@ -1,7 +1,6 @@
 import os
+from config.constants import IGNORE_DIRS, SUPPORTED_EXTENSIONS
 
-SUPPORTED_EXTENSIONS = {...}
-IGNORE_DIRS = {...}
 
 def should_process_file(path):
     parts = path.split(os.sep)
