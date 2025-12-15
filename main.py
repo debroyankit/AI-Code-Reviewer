@@ -4,7 +4,8 @@ from app.github_client import (
     submit_batch_review, 
     post_fallback_comments, 
     get_current_user_login,
-    create_review_comment_fallback
+    create_review_comment_fallback,
+    get_pr_obj
 )
 from app.rag_engine import build_vector_store, get_relevant_context
 from app.llm_client import review_with_groq
@@ -14,6 +15,12 @@ def main():
     check_env_vars()
     print(f"🚀 Starting review for {REPO_NAME} PR #{PR_NUMBER}")
 
+    # --- NEW: Check if Draft/WIP first ---
+    # We use a lightweight check before fetching all the heavy diffs
+    pr_check = get_pr_obj(PR_NUMBER)
+    if not pr_check:
+        return # Exit if draft or WIP
+        
     pr_obj, diff_text, search_query, file_contents, patch_positions = get_pr_diff_and_files(PR_NUMBER)
 
     if not diff_text.strip():

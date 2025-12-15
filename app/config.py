@@ -10,6 +10,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 REPO_NAME = os.getenv("GITHUB_REPOSITORY")  # owner/repo
 PR_NUMBER = int(os.getenv("PR_NUMBER", "0"))
 
+# Constants
+MAX_DIFF_LENGTH = 30000  # <--- NEW: Safety limit for LLM context window
+
 def check_env_vars():
     if not (GITHUB_TOKEN and GROQ_API_KEY and REPO_NAME and PR_NUMBER):
         raise SystemExit("Missing required env vars: GITHUB_TOKEN, GROQ_API_KEY, GITHUB_REPOSITORY, PR_NUMBER")
