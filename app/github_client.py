@@ -8,6 +8,23 @@ from app.utils import extract_diff_positions
 gh = Github(GITHUB_TOKEN)
 repo = gh.get_repo(REPO_NAME)
 
+# --- NEW FUNCTION ---
+def get_pr_obj(pr_number):
+    """Fetch the PR object and check if it's valid for review."""
+    pr = repo.get_pull(pr_number)
+    
+    # 1. Check if Draft
+    if pr.draft:
+        print("⚠️ PR is a Draft. Skipping review.")
+        return None
+        
+    # 2. Check for WIP titles
+    if "wip" in pr.title.lower() or "do not merge" in pr.title.lower():
+        print("⚠️ PR is marked WIP. Skipping review.")
+        return None
+        
+    return pr
+
 def get_current_user_login():
     """Get the username of the authenticated token owner."""
     return gh.get_user().login
