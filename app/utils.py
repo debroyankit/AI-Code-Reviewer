@@ -1,113 +1,53 @@
-def extract_diff_positions(patch_text):
-    """
-    Converts NEW file line numbers → DIFF positions for GitHub API.
-    Example:
-      new line 42 appears at diff line 13 → mapping[42] = 13
-    """
-    mapping = {}                     # final result: {new_line: diff_position}
-    if not patch_text:
-        return mapping               # no diff → no mapping
+from typing import List, Tuple
+from app.models import Finding, ReviewResult, Severity
 
-    diff_position = 0                # counts lines inside the patch (1,2,3…)
-    new_file_line = None             # tracks current NEW file line number
-
-    for line in patch_text.splitlines():    
-        diff_position += 1           # every line in patch increments diff pos
-
-        # --------------------------
-        # HUNK HEADER: @@ -old +new @@
-        # Example: @@ -10,7 +20,8 @@
-        # We only care about +20,8 → new file starts at line 20
-        # --------------------------
-        if line.startswith("@@"):
-            try:
-                parts = line.split()              # ["@@", "-10,7", "+20,8", "@@"]
-                new_header = parts[2]             # "+20,8"
-                new_start = int(new_header.split(",")[0][1:])  # 20
-                new_file_line = new_start - 1     # set to 19 so next line becomes 20
-            except Exception:
-                new_file_line = None              # if parsing fails
-            continue                               # move to next line
-
-        # --------------------------
-        # ADDED LINE (starts with "+")
-        # Example: +    print("hello")
-        # This line EXISTS in the NEW file → increment new_file_line
-        # And map: new_file_line → diff_position
-        # --------------------------
-        if line.startswith("+") and not line.startswith("+++"):
-            if new_file_line is None:
-                continue
-            new_file_line += 1
-            mapping[new_file_line] = diff_position
-            continue
-
-        # --------------------------
-        # REMOVED LINE ("-")
-        # Exists only in OLD file → do NOT increment new_file_line
-        # --------------------------
-        elif line.startswith("-"):
-            continue
-
-        # --------------------------
-        # CONTEXT LINE (unchanged)
-        # Exists in NEW file → increment new_file_line
-        # but don't store mapping
-        # Example: "     print(result)"
-        # --------------------------
-        else:
-            if new_file_line is None:
-                continue
-            new_file_line += 1
-
-    return mapping   # final dictionary used to connect LLM line numbers → GitHub diff positions
-
-
-def dedupe_comments(comments):
-    """Remove exact duplicates and merge same path+line comments."""
+def dedupe_findings(findings: List[Finding]) -> List[Finding]:
+    """Deduplicate findings having identical path, line, and message content."""
     seen = set()
     out = []
-    for c in comments:
-        key = (c.get("path"), int(c.get("line")), c.get("body"))
+    for f in findings:
+        key = (f.path, f.line, f.message.strip().lower())
         if key in seen:
             continue
         seen.add(key)
-        out.append(c)
+        out.append(f)
     return out
 
-def map_to_diff_positions(comments, patch_positions):
-    """
-    Returns two lists:
-      inline_comments_for_batch (list of dicts with path, position, body)
-      fallback_comments (list of dicts to post as issue comments if position missing)
-    """
-    inline = []
-    fallback = []
-    for c in comments:
-        path = c.get("path")
-        line = int(c.get("line"))
-        body = c.get("body")
-        mapping = patch_positions.get(path, {})
-        if mapping and line in mapping:
-            inline.append({"path": path, "position": mapping[line], "body": body})
-        else:
-            fallback.append({"path": path, "line": line, "body": body})
-    return inline, fallback
+def build_summary(
+    result: ReviewResult,
+    skipped_files: List[Tuple[str, str]],
+) -> str:
+    """Builds a rich markdown review summary body."""
+    bugs = result.count(Severity.BUG)
+    warnings = result.count(Severity.WARNING)
+    suggestions = result.count(Severity.SUGGESTION)
+    total = bugs + warnings + suggestions
 
-def build_summary(comments):
-    if not comments:
-        return "✅ LGTM — No issues found by AI."
-    major = [c for c in comments if c.get("severity") == "major"]
-    minor = [c for c in comments if c.get("severity") == "minor"]
-    style = [c for c in comments if c.get("severity") == "style"]
+    lines = ["## 🤖 AI Code Reviewer Summary", ""]
+    lines.append(
+        f"**Files reviewed**: {result.files_reviewed} | **Findings**: {total} "
+        f"({bugs} 🔴 bugs · {warnings} 🟡 warnings · {suggestions} 🔵 suggestions)"
+    )
 
-    parts = []
-    if major:
-        parts.append(f"❌ {len(major)} major issue(s)")
-    if minor:
-        parts.append(f"⚠️ {len(minor)} minor suggestion(s)")
-    if style:
-        parts.append(f"ℹ️ {len(style)} style note(s)")
+    if total == 0:
+        lines += ["", "✅ LGTM! No issues were identified in the reviewed changes."]
 
-    summary = "🤖 **AI Code Review** — " + ", ".join(parts) + "."
-    return summary
+    sections = [
+        (Severity.BUG, "### 🔴 Bugs"),
+        (Severity.WARNING, "### 🟡 Warnings"),
+        (Severity.SUGGESTION, "### 🔵 Suggestions"),
+    ]
+
+    for severity, header in sections:
+        items = [f for f in result.findings if f.severity == severity]
+        if not items:
+            continue
+        lines += ["", header]
+        lines += [f"- `{f.path}:{f.line}` — {f.message}" for f in items]
+
+    if skipped_files:
+        lines += ["", "### ⚪ Skipped Files"]
+        lines += [f"- `{path}` — {reason}" for path, reason in skipped_files]
+
+    lines += ["", "---", f"_Generated by AI Code Reviewer using `{result.model}`_"]
+    return "\n".join(lines)

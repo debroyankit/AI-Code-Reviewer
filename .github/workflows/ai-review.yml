@@ -7,6 +7,11 @@ on:
       - main
       - master
 
+# Prevent concurrent review runs on the same pull request branch
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: write
@@ -17,18 +22,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # Fetch previous commits for diff context
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install Dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      # Cache the FAISS vector index so it doesn't rebuild on every PR.
+      # The cache key includes a hash of all .py/.js/.ts files on the base branch.
+      # When code on main changes, the cache auto-invalidates and rebuilds once.
+      - name: Restore FAISS Cache
+        uses: actions/cache@v4
+        with:
+          path: .faiss_cache
+          key: faiss-index-${{ hashFiles('**/*.py', '**/*.js', '**/*.ts', '**/*.java', '**/*.go') }}
+          restore-keys: |
+            faiss-index-
 
       - name: Run AI Reviewer
         env:
@@ -37,3 +55,4 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: python main.py
+

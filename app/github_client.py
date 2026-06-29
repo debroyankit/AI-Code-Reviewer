@@ -1,178 +1,129 @@
-import os
-import requests
-from github import Github
-from app.config import GITHUB_TOKEN, REPO_NAME, IGNORE_DIRS, SUPPORTED_EXTENSIONS
-from app.utils import extract_diff_positions
+import sys
+from typing import List, Optional, Tuple, Dict
+from github import Github, Auth
+from github.PullRequest import PullRequest
+from github.File import File
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Initialize GitHub Client
-gh = Github(GITHUB_TOKEN)
-repo = gh.get_repo(REPO_NAME)
+from app.config import settings
+from app.models import FileHunk, Finding
+from app.parser import build_file_hunk
 
-# --- NEW FUNCTION ---
-def get_pr_obj(pr_number):
-    """Fetch the PR object and check if it's valid for review."""
-    pr = repo.get_pull(pr_number)
-    
-    # 1. Check if Draft
-    if pr.draft:
-        print("⚠️ PR is a Draft. Skipping review.")
-        return None
-        
-    # 2. Check for WIP titles
-    if "wip" in pr.title.lower() or "do not merge" in pr.title.lower():
-        print("⚠️ PR is marked WIP. Skipping review.")
-        return None
-        
-    return pr
+class GitHubClient:
+    def __init__(self) -> None:
+        auth = Auth.Token(settings.github_token)
+        self._gh = Github(auth=auth)
+        self._repo = self._gh.get_repo(settings.repo_name)
 
-def get_current_user_login():
-    """Get the username of the authenticated token owner."""
-    return gh.get_user().login
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+    def get_pr(self, pr_number: int) -> Optional[PullRequest]:
+        """Fetch the PR object. Checks draft/WIP status."""
+        try:
+            pr = self._repo.get_pull(pr_number)
+        except Exception as e:
+            print(f"❌ Failed to fetch PR #{pr_number}: {e}", file=sys.stderr)
+            raise e
 
-def should_process_file(path): ## takes path from rag_engine where we are passing the changed file's path here
-    parts = path.split(os.sep) ##if path = "src/components/Button.tsx", parts = ["src", "components", "Button.tsx"]
-    for p in parts:
-        if p in IGNORE_DIRS: ##IGNORE_DIRS = ["node_modules", "dist", ".venv"]
+        if pr.draft:
+            print("⚠️ PR is a Draft. Skipping review.")
+            return None
+
+        title_lower = pr.title.lower() if pr.title else ""
+        if "wip" in title_lower or "do not merge" in title_lower:
+            print("⚠️ PR is marked WIP. Skipping review.")
+            return None
+
+        return pr
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+    def fetch_pr_files(self, pr: PullRequest) -> List[File]:
+        """Fetch files modified in the PR."""
+        return list(pr.get_files())
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+    def fetch_file_content(self, filename: str, ref: str) -> str:
+        """Fetch full file content from a specific git ref."""
+        try:
+            blob = self._repo.get_contents(filename, ref=ref)
+            if isinstance(blob, list):
+                return ""
+            return blob.decoded_content.decode("utf-8")
+        except Exception:
+            return ""
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+    def get_existing_review_comments(self, pr: PullRequest) -> List[str]:
+        """Returns a list of comments already posted by the current user to avoid duplicates."""
+        current_user = self._gh.get_user().login
+        existing = []
+        for comment in pr.get_review_comments():
+            if comment.user.login == current_user:
+                existing.append(f"{comment.path}:{comment.line}:{comment.body}")
+        return existing
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+    def submit_review(self, pr: PullRequest, body: str, event: str, comments: List[Dict]) -> bool:
+        """Submits a single review using the public PyGithub API."""
+        try:
+            # comments param shape: [{"path": str, "line": int, "body": str}]
+            # PyGithub converts this internally to the right format.
+            review_comments = []
+            for c in comments:
+                review_comments.append({
+                    "path": c["path"],
+                    "line": c["line"],
+                    "body": c["body"]
+                })
+
+            pr.create_review(
+                body=body,
+                event=event,
+                comments=review_comments
+            )
+            print("✅ PR Review submitted successfully.")
+            return True
+        except Exception as e:
+            print(f"❌ Failed to submit PR Review: {e}", file=sys.stderr)
             return False
-    _, ext = os.path.splitext(path)## os.path.splitext("src/utils/helpers.py")->("src/utils/helpers", ".py"), where _ = unused part (filename) and ext = extension (".py")
-    return ext in SUPPORTED_EXTENSIONS
 
-def get_pr_diff_and_files(pr_number):
-    pr = repo.get_pull(pr_number)                
-    # Example: PR #5 on repo. Lets you read changed files, patches, etc.
+    def get_current_user(self) -> str:
+        return self._gh.get_user().login
 
-    diff_text = ""                                
-    # This will contain ALL DIFFS across all files.
-    # Example output:
-    # --- FILE: utils.py ---
-    # @@ -10,3 +10,4 @@
-    # - old line
-    # + new line
+    def should_process_file(self, path: str) -> bool:
+        import os
+        parts = path.split(os.sep)
+        for p in parts:
+            if p in settings.ignore_dirs:
+                return False
+        _, ext = os.path.splitext(path)
+        return ext in settings.supported_extensions
 
-    search_query = ""                             
-    # Used ONLY for RAG. Contains ONLY added lines (i.e., "+ new code").
+    def prepare_hunks(self, files: List[File]) -> Tuple[List[FileHunk], List[Tuple[str, str]]]:
+        """Parses modified files into FileHunks, skipping non-code/deleted/ignored files."""
+        hunks = []
+        skipped = []
 
-    file_contents = {}                            
-    # Full NEW file content for each changed file.
-    # Example: file_contents["utils.py"] = "def foo():\n  return 5"
+        for f in files:
+            if f.status == "removed":
+                continue
 
-    patch_positions = {}                          
-    # Stores: {filename: {new_file_line: diff_position}}
-    # Example: {"utils.py": {12: 5, 13: 6}}
+            if not self.should_process_file(f.filename):
+                continue
 
-    for f in pr.get_files():                      
-        # Loop through each file changed in the PR.
-        # Example: f.filename = "src/utils/helpers.py"
-
-        filename = f.filename                     
-
-        _, ext = os.path.splitext(filename)       
-        # Example: "utils.py" → ext = ".py"
-        if ext not in SUPPORTED_EXTENSIONS:       
-            continue                               # skip json, png, lock files, etc.
-
-        diff_text += f"\n\n--- FILE: {filename} ---\n"  
-        # Add a readable file header for the LLM.
-
-        patch = f.patch                           
-        # Unified diff for this file. Example:
-        # @@ -10,3 +10,4 @@
-        # - old = 1
-        # + new = 2
-
-        # --------------------------- CASE: patch exists (normal case) ---------------------------
-        if patch:
-            diff_text += patch + "\n"             
-            # Append raw diff to diff_text which will be sent to the LLM.
-
-            patch_positions[filename] = extract_diff_positions(patch)
-            # Example output: {11: 5, 12: 6}
-            # Meaning: new file line 11 → diff position 5 inside the patch.
-
-            # Grab ONLY added lines from the patch to feed RAG.
-            added_lines = [
-                line[1:]                           # remove the '+' sign
-                for line in patch.splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-                # skip the diff header "+++ b/utils.py"
-            ]
-
-            if added_lines:
-                search_query += "\n".join(added_lines) + "\n"
-                # Example added_lines:
-                # ["new = compute_v2(a)", "print('v2 enabled')"]
-
-        # --------------------------- CASE: NO patch (rare case) ---------------------------
-        else:
-            patch_positions[filename] = {}        
-            # No diff → cannot calculate new_line → diff_position.
+            if len(hunks) >= settings.max_files_per_pr:
+                skipped.append((f.filename, f"PR exceeds limit of {settings.max_files_per_pr} files"))
+                continue
 
             try:
-                blob = repo.get_contents(filename, ref=pr.head.ref)
-                content = blob.decoded_content.decode("utf-8")
-                # Fetch full file content from PR head branch.
-            except Exception:
-                content = ""
+                hunk = build_file_hunk(
+                    f.filename,
+                    f.patch,
+                    max_lines=settings.max_lines_per_file,
+                    is_new_file=f.status == "added"
+                )
+                if hunk:
+                    hunks.append(hunk)
+            except Exception as e:
+                skipped.append((f.filename, f"Failed to parse diff: {e}"))
 
-            diff_text += content + "\n"           
-            # If no patch, give the LLM the full file instead.
-
-            search_query += content + "\n"        
-            # Also send entire file content for RAG.
-
-        # --------------------------- ALWAYS fetch full new file content ---------------------------
-        try:
-            blob = repo.get_contents(filename, ref=pr.head.ref)
-            file_contents[filename] = blob.decoded_content.decode("utf-8")
-            # Example:
-            # file_contents["main.py"] = "def run():\n   print('Hello')"
-        except Exception:
-            file_contents[filename] = ""
-
-    # --------------------------- RETURN EVERYTHING NEEDED ---------------------------
-    return pr, diff_text, search_query, file_contents, patch_positions
-
-
-def submit_batch_review(pr_number, inline_comments, summary, event="COMMENT"):
-    url = f"https://api.github.com/repos/{REPO_NAME}/pulls/{pr_number}/reviews"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-    payload = {
-        "body": summary,
-        "event": event,
-        "comments": inline_comments
-    }
-    resp = requests.post(url, json=payload, headers=headers)
-    if resp.status_code in (200, 201):
-        print("✅ Batch review submitted.")
-        return True
-    else:
-        print(f"❌ Batch review error {resp.status_code}: {resp.text}")
-        return False
-
-def create_review_comment_fallback(pr_obj, path, position, body):
-    """
-    Fallback: Post a single review comment using PyGithub.
-    Must fetch the specific Commit object first.
-    """
-    try:
-        # Fetch the commit object for the HEAD of the PR
-        commit = repo.get_commit(pr_obj.head.sha)
-        pr_obj.create_review_comment(body=body, commit=commit, path=path, position=position)
-        print(f"✅ Fallback inline comment posted: {path}")
-    except Exception as e:
-        print(f"⚠️ Fallback single inline failed: {e}")
-
-def post_fallback_comments(pr_obj, fallback_comments):
-    for c in fallback_comments:
-        path = c.get("path")
-        line = c.get("line")
-        body = c.get("body")
-        try:
-            comment_body = f"[Line {line}] {body}"
-            pr_obj.create_issue_comment(f"In `{path}`: {comment_body}")
-            print(f"💬 Fallback comment posted on {path} (line {line})")
-        except Exception as e:
-            print(f"⚠️ Failed to post fallback comment: {e}")
+        return hunks, skipped

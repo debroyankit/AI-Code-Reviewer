@@ -1,0 +1,84 @@
+# action.yml — This makes your repo a reusable GitHub Action.
+#
+# HOW TO USE IN ANOTHER REPO:
+# 1. Create .github/workflows/ai-review.yml in your target repo
+# 2. Add the following content:
+#
+#    name: AI Code Review
+#    on:
+#      pull_request:
+#        types: [opened, synchronize, reopened]
+#    permissions:
+#      contents: read
+#      pull-requests: write
+#    jobs:
+#      review:
+#        runs-on: ubuntu-latest
+#        steps:
+#          - uses: actions/checkout@v4
+#            with:
+#              fetch-depth: 0
+#          - uses: debroyankit/AI-Code-Reviewer@main
+#            with:
+#              groq_api_key: ${{ secrets.GROQ_API_KEY }}
+#
+# 3. Add GROQ_API_KEY to the target repo's Settings → Secrets → Actions
+# That's it!
+
+name: 'AI Code Reviewer'
+description: 'Automatically reviews GitHub PRs using LLM-powered analysis with RAG context from your codebase.'
+author: 'debroyankit'
+
+branding:
+  icon: 'code'
+  color: 'blue'
+
+inputs:
+  groq_api_key:
+    description: 'Your Groq API key (starts with gsk_)'
+    required: true
+  github_token:
+    description: 'GitHub token for posting review comments (defaults to the built-in GITHUB_TOKEN)'
+    required: false
+    default: ${{ github.token }}
+  llm_model:
+    description: 'Groq LLM model to use for review'
+    required: false
+    default: 'llama-3.1-8b-instant'
+  max_files_per_pr:
+    description: 'Maximum number of files to review per PR'
+    required: false
+    default: '20'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+        cache-dependency-path: ${{ github.action_path }}/requirements.txt
+
+    - name: Install AI Code Reviewer
+      shell: bash
+      run: pip install -r "${{ github.action_path }}/requirements.txt"
+
+    - name: Restore FAISS Cache
+      uses: actions/cache@v4
+      with:
+        path: .faiss_cache
+        key: faiss-index-${{ hashFiles('**/*.py', '**/*.js', '**/*.ts', '**/*.java', '**/*.go') }}
+        restore-keys: |
+          faiss-index-
+
+    - name: Run AI Code Review
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github_token }}
+        GROQ_API_KEY: ${{ inputs.groq_api_key }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        LLM_MODEL: ${{ inputs.llm_model }}
+        MAX_FILES_PER_PR: ${{ inputs.max_files_per_pr }}
+      run: python "${{ github.action_path }}/main.py"
