@@ -1,24 +1,20 @@
-name: AI Code Reviewer
+name: Sync FAISS Cache
 
+# Triggers:
+# 1. After a PR is merged (push to main/master)
+# 2. Manual trigger for first-time bootstrap (workflow_dispatch)
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  push:
     branches:
       - main
       - master
-
-# Prevent concurrent review runs on the same pull request branch
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  workflow_dispatch:  # Allows manual trigger from Actions tab
 
 permissions:
   contents: read
-  pull-requests: write
-  issues: write
 
 jobs:
-  review:
+  sync:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -30,28 +26,24 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Load the pre-built FAISS cache (built by cache-sync.yml workflow).
-      # Uses a fixed key so the same cache is shared across all PR runs.
+      # Restore existing FAISS cache (if any) before running the sync
       - name: Restore FAISS Cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v4
         with:
           path: .faiss_cache
           key: faiss-repo-cache-${{ github.repository }}
           restore-keys: |
             faiss-repo-cache-
 
-      - name: Run AI Reviewer
+      - name: Sync Cache
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_MODE: review
-        run: python main.py
+          RUN_MODE: sync
+        run: python sync_cache.py

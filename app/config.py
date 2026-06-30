@@ -7,9 +7,12 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     github_token: str = Field(..., alias="GITHUB_TOKEN")
-    groq_api_key: str = Field(..., alias="GROQ_API_KEY")
+    groq_api_key: str = Field("", alias="GROQ_API_KEY")  # Not needed for cache sync
     repo_name: str = Field(..., alias="GITHUB_REPOSITORY")
-    pr_number: int = Field(..., alias="PR_NUMBER")
+    pr_number: int = Field(0, alias="PR_NUMBER")  # 0 = sync mode (no PR)
+
+    # Run mode: "review" (PR review) or "sync" (cache sync)
+    run_mode: str = Field("review", alias="RUN_MODE")
 
     # Upgraded configs: Customizable thresholds
     max_diff_length: int = Field(30000, alias="MAX_DIFF_LENGTH")
@@ -25,22 +28,23 @@ class Settings(BaseSettings):
         ".html", ".css", ".sql", ".json", ".yaml", ".yml", ".toml",
     }
     
-    ignore_dirs: Set[str] = {"node_modules", "venv", "env", ".git", "__pycache__", "dist", "build", "target"}
+    ignore_dirs: Set[str] = {"node_modules", "venv", "env", ".git", "__pycache__", "dist", "build", "target", ".faiss_cache"}
 
     @field_validator("pr_number", mode="before")
     @classmethod
     def parse_pr_number(cls, v):
         if isinstance(v, str):
-            if not v.strip() or v == "0":
-                raise ValueError("PR_NUMBER must be a non-zero positive integer")
+            if not v.strip():
+                return 0
             return int(v)
         return v
 
 # Instantiate a global settings object. It will throw an error immediately 
-# if GITHUB_TOKEN, GROQ_API_KEY, GITHUB_REPOSITORY, or PR_NUMBER are missing.
+# if GITHUB_TOKEN or GITHUB_REPOSITORY are missing.
 try:
     settings = Settings()
 except Exception as e:
     import sys
     print(f"❌ Configuration error:\n{e}", file=sys.stderr)
-    sys.exit(2)
+    sys.exit(2)
+

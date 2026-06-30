@@ -23,10 +23,12 @@
 #              groq_api_key: ${{ secrets.GROQ_API_KEY }}
 #
 # 3. Add GROQ_API_KEY to the target repo's Settings → Secrets → Actions
-# That's it!
+#
+# NOTE: For incremental caching, also add the cache-sync workflow.
+#       See .github/workflows/cache-sync.yml for the template.
 
 name: 'AI Code Reviewer'
-description: 'Automatically reviews GitHub PRs using LLM-powered analysis with RAG context from your codebase.'
+description: 'Automatically reviews GitHub PRs using LLM-powered analysis with incremental RAG context from your codebase.'
 author: 'debroyankit'
 
 branding:
@@ -62,13 +64,15 @@ runs:
       shell: bash
       run: pip install -r "${{ github.action_path }}/requirements.txt"
 
+    # Load pre-built FAISS cache (read-only).
+    # The cache is built by the cache-sync workflow in the target repo.
     - name: Restore FAISS Cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: .faiss_cache
-        key: faiss-index-${{ hashFiles('**/*.py', '**/*.js', '**/*.ts', '**/*.java', '**/*.go') }}
+        key: faiss-repo-cache-${{ github.repository }}
         restore-keys: |
-          faiss-index-
+          faiss-repo-cache-
 
     - name: Run AI Code Review
       shell: bash
@@ -79,4 +83,5 @@ runs:
         PR_NUMBER: ${{ github.event.pull_request.number }}
         LLM_MODEL: ${{ inputs.llm_model }}
         MAX_FILES_PER_PR: ${{ inputs.max_files_per_pr }}
+        RUN_MODE: review
       run: python "${{ github.action_path }}/main.py"

@@ -4,9 +4,10 @@ from typing import List
 from app.config import settings
 from app.github_client import GitHubClient
 from app.llm_client import LLMReviewer
-from app.rag_engine import build_vector_store, get_relevant_context
+from app.rag_engine import load_index, get_relevant_context
 from app.models import ReviewResult, FileReview, Severity
 from app.utils import dedupe_findings, build_summary
+
 
 def main():
     print(f"🚀 Starting AI Code Reviewer for {settings.repo_name} PR #{settings.pr_number}")
@@ -33,8 +34,8 @@ def main():
         print("✅ No supported code changes to review. Exiting.")
         sys.exit(0)
 
-    # 5. Build RAG Vector Store from codebase checkout
-    db = build_vector_store(gh_client)
+    # 5. Load pre-built RAG Vector Store from cache (built by cache-sync workflow)
+    db = load_index()
 
     # 6. Perform file-by-file reviews
     file_reviews: List[FileReview] = []
