@@ -59,8 +59,19 @@ runs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'
-        cache-dependency-path: '${{ github.action_path }}/requirements.txt'
+
+    - name: Hash Requirements
+      id: req-hash
+      shell: bash
+      run: echo "hash=$(sha256sum ${{ github.action_path }}/requirements.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+    - name: Cache pip packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-ai-reviewer-${{ steps.req-hash.outputs.hash }}
+        restore-keys: |
+          ${{ runner.os }}-pip-ai-reviewer-
 
     - name: Install AI Code Reviewer
       shell: bash
