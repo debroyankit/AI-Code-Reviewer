@@ -54,12 +54,16 @@ class GitHubClient:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
     def get_existing_review_comments(self, pr: PullRequest) -> List[str]:
         """Returns a list of comments already posted by the current user to avoid duplicates."""
-        current_user = self._gh.get_user().login
+        try:
+            current_user = self._gh.get_user().login
+        except Exception:
+            current_user = "github-actions[bot]"
         existing = []
         for comment in pr.get_review_comments():
             if comment.user.login == current_user:
                 existing.append(f"{comment.path}:{comment.line}:{comment.body}")
         return existing
+
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
     def submit_review(self, pr: PullRequest, body: str, event: str, comments: List[Dict]) -> bool:
@@ -87,7 +91,10 @@ class GitHubClient:
             return False
 
     def get_current_user(self) -> str:
-        return self._gh.get_user().login
+        try:
+            return self._gh.get_user().login
+        except Exception:
+            return "github-actions[bot]"
 
     def should_process_file(self, path: str) -> bool:
         import os
