@@ -64,7 +64,7 @@ class Finding(BaseModel):
         """Helper to format inline GitHub comment markdown."""
         body = f"{self.severity.emoji} **{self.severity.label}** — {self.message}"
         if self.suggestion:
-            body += f"\n\n**Fix:**\n```python\n{self.suggestion}\n```"
+            body += f"\n\n```suggestion\n{self.suggestion}\n```"
         return body
 
 class FileHunk(BaseModel):

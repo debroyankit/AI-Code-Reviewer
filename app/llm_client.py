@@ -35,6 +35,7 @@ REQUIREMENTS:
 3. Use the line number shown at the start of the line.
 4. If there are no issues, output the literal JSON array: []
 5. Respond with ONLY a JSON array of objects. Do not write any natural language, code block tags, or introductory text.
+6. The "suggestion" field, if provided, MUST be a direct drop-in replacement code block for the commented line. It MUST preserve the exact leading indentation (spaces or tabs) of the original line in the diff, and contain ONLY the replacement code lines. Do NOT include markdown formatting or explanations inside the "suggestion" value.
 
 JSON Schema format:
 [
@@ -43,7 +44,7 @@ JSON Schema format:
     "severity": "bug" | "warning" | "suggestion",
     "category": "security" | "bug" | "performance" | "style",
     "message": "A short, single-line explanation of the issue (max 140 chars)",
-    "suggestion": "Optional exact python/code fix recommendation"
+    "suggestion": "Optional exact drop-in code replacement preserving original leading indentation"
   }
 ]"""
 
