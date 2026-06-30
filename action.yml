@@ -72,6 +72,7 @@ runs:
         key: ${{ runner.os }}-pip-ai-reviewer-${{ steps.req-hash.outputs.hash }}
         restore-keys: |
           ${{ runner.os }}-pip-ai-reviewer-
+        save-always: 'true'
 
     - name: Install AI Code Reviewer
       shell: bash
