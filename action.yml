@@ -60,31 +60,9 @@ runs:
       with:
         python-version: '3.11'
 
-    - name: Hash Requirements
-      id: req-hash
-      shell: bash
-      run: echo "hash=$(sha256sum ${{ github.action_path }}/requirements.txt | awk '{print $1}')" >> $GITHUB_OUTPUT
-
-    - name: Restore pip packages
-      id: pip-cache
-      uses: actions/cache/restore@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-ai-reviewer-${{ steps.req-hash.outputs.hash }}
-        restore-keys: |
-          ${{ runner.os }}-pip-ai-reviewer-
-
     - name: Install AI Code Reviewer
       shell: bash
       run: pip install -r "${{ github.action_path }}/requirements.txt"
-
-    - name: Save pip packages
-      if: steps.pip-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-ai-reviewer-${{ steps.req-hash.outputs.hash }}
-
 
     # Load pre-built FAISS cache (read-only).
     # The cache is built by the cache-sync workflow in the target repo.
