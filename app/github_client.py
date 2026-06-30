@@ -61,7 +61,15 @@ class GitHubClient:
         existing = []
         for comment in pr.get_review_comments():
             if comment.user.login == current_user:
-                existing.append(f"{comment.path}:{comment.line}:{comment.body}")
+                # Safely extract line number to avoid AttributeError
+                line = None
+                try:
+                    line = comment.line
+                except AttributeError:
+                    pass
+                if line is None:
+                    line = comment.raw_data.get("line") or comment.position or 0
+                existing.append(f"{comment.path}:{line}:{comment.body}")
         return existing
 
 
